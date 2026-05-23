@@ -27,11 +27,13 @@
    * 伸出大拇指、食指和小拇指，星云将被死死锁定在当前状态，此时放下手也不会散开。
 
 ## 🚀 如何运行与使用
-**方法一：本地运行（最简单）**
-直接在本项目中下载 `index.html` 文件，双击用 Chrome 或 Edge 浏览器打开即可体验。（*注：需要设备拥有摄像头*）
+🎮 在线直接体验链接 (Live Demo):
+👉 https://kiklemoun.github.io/Dream-Nebula/
+(发给别人，点开就能直接玩)
 
-**方法二：在线体验 (Live Demo)**
-👉 [点击这里直接在线体验](https://[你的GitHub用户名].github.io/Dream-Nebula/)
+🌐 项目开源代码库:
+👉 https://github.com/kiklemoun/Dream-Nebula
+(同行交流、展示你底层算法逻辑的地方)
 
 ## 🛠️ 技术栈
 * HTML5 Canvas + 原生 JavaScript (ES6+)
