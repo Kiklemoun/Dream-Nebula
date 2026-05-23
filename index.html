@@ -1,0 +1,455 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>梦幻星云</title>
+
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/camera_utils/camera_utils.js" crossorigin="anonymous"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@mediapipe/hands/hands.js" crossorigin="anonymous"></script>
+
+    <style>
+        body, html {
+            margin: 0; padding: 0; width: 100%; height: 100%;
+            background-color: #000; overflow: hidden;
+            display: flex; justify-content: center; align-items: center;
+            user-select: none; -webkit-user-select: none;
+        }
+        canvas {
+            position: absolute; top: 0; left: 0; z-index: 1;
+            cursor: grab;
+        }
+        canvas:active { cursor: grabbing; }
+
+        .video-container {
+            position: absolute; bottom: 20px; left: 20px; z-index: 10;
+            width: 240px; height: 180px; border-radius: 12px;
+            border: 2px solid rgba(255,255,255,0.2); overflow: hidden;
+            transform: scaleX(-1);
+        }
+        video { width: 100%; height: 100%; object-fit: cover; }
+
+        #statusUI {
+            position: absolute; top: 30px; left: 30px; z-index: 10;
+            color: #fff; font-family: 'Microsoft YaHei', sans-serif; font-size: 22px;
+            font-weight: bold; text-shadow: 0 0 10px #c872c8, 0 0 20px #c872c8;
+            pointer-events: none;
+        }
+        #debugUI {
+            position: absolute; top: 70px; left: 30px; z-index: 10;
+            color: #aaa; font-family: monospace; font-size: 14px;
+            pointer-events: none;
+        }
+        /* 全屏按钮样式 */
+        #fullscreenBtn {
+            position: absolute; top: 30px; right: 30px; z-index: 20;
+            background: rgba(255, 255, 255, 0.1); border: 1px solid rgba(255, 255, 255, 0.2);
+            color: #fff; padding: 10px 15px; border-radius: 8px;
+            font-family: 'Microsoft YaHei', sans-serif; font-size: 14px;
+            cursor: pointer; transition: all 0.3s; backdrop-filter: blur(5px);
+        }
+        #fullscreenBtn:hover {
+            background: rgba(255, 255, 255, 0.2); box-shadow: 0 0 15px rgba(255, 255, 255, 0.5);
+        }
+    </style>
+</head>
+<body>
+    <audio autoplay="autoplay" loop="loop" preload="auto" src="http://ws.stream.qqmusic.qq.com/C4000009nowb1Lxsk5.m4a?guid=291747946&vkey=927E1CB036619BB457EC5C1E98E58C4646FD00050805BB0984A5BFCA3496DCEB4584A8A036F397667725E74D8AC498ED6108144422F6FC6F&uin=&fromtag=120032"></audio>
+
+    <div id="statusUI">📡 梦幻星云：正在唤醒视觉引擎...</div>
+    <div id="debugUI">手指状态: 等待检测</div>
+
+    <button id="fullscreenBtn">🔲 进入全屏</button>
+
+    <div class="video-container">
+        <video id="input_video" autoplay playsinline></video>
+    </div>
+
+    <canvas id="heartCanvas"></canvas>
+
+    <script>
+        /* =================================================================
+           第一部分：梦幻星云 3D 渲染与物理引擎
+        ================================================================= */
+        const canvas = document.getElementById('heartCanvas');
+        const ctx = canvas.getContext('2d');
+        let width, height;
+        let particles = [];
+        let nebulaParticles = [];
+
+        const colors = ['#c872c8', '#b48bb4', '#9b519b', '#d398d3', '#8f508f'];
+        const nebulaColors = ['#d8a0d8', '#c872c8', '#b48bb4', '#e6b8e6', '#a67ca6'];
+
+        const fov = 400;
+        const sphereRadius = 110;
+
+        let globalTime = 0;
+
+        let isAccelerating = false;
+        let isExploding = false;
+        let rotX = 0.5, rotY = 0.3;
+        let vRotX = 0.002, vRotY = 0;
+        let isLocked = false;
+
+        function resize() {
+            width = canvas.width = window.innerWidth;
+            height = canvas.height = window.innerHeight;
+        }
+        window.addEventListener('resize', resize);
+        resize();
+
+        function generateSolidSpherePoint() {
+            while (true) {
+                let x = (Math.random() - 0.5) * 2, y = (Math.random() - 0.5) * 2, z = (Math.random() - 0.5) * 2;
+                if (x * x + y * y + z * z <= 1) return { x: x * sphereRadius, y: y * sphereRadius, z: z * sphereRadius };
+            }
+        }
+
+        class Particle {
+            constructor() {
+                let targetPos = generateSolidSpherePoint();
+                this.baseX = targetPos.x; this.baseY = targetPos.y; this.baseZ = targetPos.z;
+
+                let spread = 3500;
+                this.localX = (Math.random() - 0.5) * spread;
+                this.localY = (Math.random() - 0.5) * spread;
+                this.localZ = (Math.random() - 0.5) * spread;
+
+                this.vx = 0; this.vy = 0; this.vz = 0;
+                this.baseEase = 0.003 + Math.random() * 0.004;
+
+                this.baseSize = Math.random() * 1.0 + 0.3;
+                this.size = this.baseSize;
+                this.isRetained = Math.random() < 0.4;
+                this.phase = Math.random() * Math.PI * 2;
+
+                this.color = colors[Math.floor(Math.random() * colors.length)];
+                this.rotX = 0; this.rotY = 0; this.rotZ = 0;
+            }
+
+            updateAndRotate(cx, sx, cy, sy) {
+                if (isExploding) {
+                    this.localX += this.vx; this.localY += this.vy; this.localZ += this.vz;
+                    this.vx *= this.isRetained ? 0.96 : 0.92;
+                    this.vy *= this.isRetained ? 0.96 : 0.92;
+                    this.vz *= this.isRetained ? 0.96 : 0.92;
+
+                    if (this.isRetained) {
+                        this.size = this.baseSize * (1 + Math.sin(globalTime * 0.1 + this.phase) * 0.5);
+                    } else {
+                        this.vx += (this.baseX - this.localX) * 0.0005;
+                        this.vy += (this.baseY - this.localY) * 0.0005;
+                        this.vz += (this.baseZ - this.localZ) * 0.0005;
+                    }
+                } else {
+                    let currentEase = isLocked ? this.baseEase * 15 : (isAccelerating ? this.baseEase * 10 : this.baseEase);
+                    this.localX += (this.baseX - this.localX) * currentEase;
+                    this.localY += (this.baseY - this.localY) * currentEase;
+                    this.localZ += (this.baseZ - this.localZ) * currentEase;
+
+                    this.size += (this.baseSize - this.size) * 0.1;
+                }
+
+                let y1 = this.localY * cy - this.localZ * sy;
+                let z1 = this.localY * sy + this.localZ * cy;
+                this.rotX = this.localX * cx + z1 * sx;
+                this.rotY = y1;
+                this.rotZ = -this.localX * sx + z1 * cx;
+            }
+
+            draw() {
+                let scale = fov / (fov + this.rotZ); if (scale < 0) return;
+                let projX = width / 2 + this.rotX * scale, projY = height / 2 + this.rotY * scale;
+                ctx.beginPath(); ctx.arc(projX, projY, this.size * scale, 0, Math.PI * 2);
+                ctx.fillStyle = this.color; ctx.globalAlpha = Math.min(1, Math.max(0.05, scale * 0.25)); ctx.fill();
+            }
+        }
+
+        class NebulaParticle {
+            constructor() {
+                this.angle = Math.random() * Math.PI * 2;
+                let rDist = Math.random();
+                this.radius = 125 + (rDist * rDist) * 170;
+                this.baseYOffset = (Math.random() - 0.5) * 10 * (1 - rDist * 0.5);
+                this.orbitSpeed = 0.0015 + (1 - rDist) * 0.004;
+                this.waveAmp = 8 + (1 - rDist) * 15;
+
+                let spread = 3500;
+                this.localX = (Math.random() - 0.5) * spread;
+                this.localY = (Math.random() - 0.5) * spread;
+                this.localZ = (Math.random() - 0.5) * spread;
+
+                this.vx = 0; this.vy = 0; this.vz = 0;
+                this.baseEase = 0.0025 + Math.random() * 0.0035;
+
+                this.baseSize = Math.random() * 1.5 + 0.5;
+                this.size = this.baseSize;
+                this.isRetained = Math.random() < 0.4;
+                this.phase = Math.random() * Math.PI * 2;
+
+                this.color = nebulaColors[Math.floor(Math.random() * nebulaColors.length)];
+                this.rotX = 0; this.rotY = 0; this.rotZ = 0;
+            }
+
+            updateAndRotate(cx, sx, cy, sy) {
+                this.angle += this.orbitSpeed;
+                let targetY = this.baseYOffset + Math.sin(this.angle * 3 - globalTime * 0.02) * this.waveAmp;
+                let targetX = Math.cos(this.angle) * this.radius, targetZ = Math.sin(this.angle) * this.radius;
+
+                if (isExploding) {
+                    this.localX += this.vx; this.localY += this.vy; this.localZ += this.vz;
+                    this.vx *= this.isRetained ? 0.96 : 0.92;
+                    this.vy *= this.isRetained ? 0.96 : 0.92;
+                    this.vz *= this.isRetained ? 0.96 : 0.92;
+
+                    if (this.isRetained) {
+                        this.size = this.baseSize * (1 + Math.sin(globalTime * 0.1 + this.phase) * 0.5);
+                    } else {
+                        this.vx += (targetX - this.localX) * 0.0005;
+                        this.vy += (targetY - this.localY) * 0.0005;
+                        this.vz += (targetZ - this.localZ) * 0.0005;
+                    }
+                } else {
+                    let currentEase = isLocked ? this.baseEase * 15 : (isAccelerating ? this.baseEase * 10 : this.baseEase);
+                    this.localX += (targetX - this.localX) * currentEase;
+                    this.localY += (targetY - this.localY) * currentEase;
+                    this.localZ += (targetZ - this.localZ) * currentEase;
+
+                    this.size += (this.baseSize - this.size) * 0.1;
+                }
+
+                let y1 = this.localY * cy - this.localZ * sy, z1 = this.localY * sy + this.localZ * cy;
+                this.rotX = this.localX * cx + z1 * sx; this.rotY = y1; this.rotZ = -this.localX * sx + z1 * cx;
+            }
+
+            draw() {
+                let scale = fov / (fov + this.rotZ); if (scale < 0) return;
+                let projX = width / 2 + this.rotX * scale, projY = height / 2 + this.rotY * scale;
+                ctx.beginPath(); ctx.arc(projX, projY, this.size * scale, 0, Math.PI * 2);
+                ctx.fillStyle = this.color; ctx.globalAlpha = Math.min(1, Math.max(0.02, scale * 0.4)); ctx.fill();
+            }
+        }
+
+        function initSystem() {
+            particles = []; nebulaParticles = [];
+            for (let i = 0; i < 20000; i++) particles.push(new Particle());
+            for (let i = 0; i < 5000; i++) nebulaParticles.push(new NebulaParticle());
+        }
+
+        function triggerExplosion(powerMultiplier) {
+            isExploding = true;
+            let baseForce = 15 * powerMultiplier;
+
+            const applyExplosion = (p, isNebula) => {
+                let dist = Math.hypot(p.localX, p.localY, p.localZ) || 1;
+                if (p.isRetained) {
+                    let gentleForce = (Math.random() * 2 + 1) * powerMultiplier;
+                    p.vx = (p.localX / dist) * gentleForce + (Math.random() - 0.5) * 3;
+                    p.vy = (p.localY / dist) * gentleForce + (Math.random() - 0.5) * 3;
+                    p.vz = (p.localZ / dist) * gentleForce + (Math.random() - 0.5) * 3;
+                } else {
+                    let extraForce = isNebula ? 5 : 0;
+                    let force = (baseForce + extraForce) + Math.random() * (baseForce * 1.5);
+                    p.vx = (p.localX / dist) * force;
+                    p.vy = (p.localY / dist) * force;
+                    p.vz = (p.localZ / dist) * force;
+                }
+            };
+
+            particles.forEach(p => applyExplosion(p, false));
+            nebulaParticles.forEach(p => applyExplosion(p, true));
+
+            setTimeout(() => { isExploding = false; }, 3500);
+        }
+
+        function animate() {
+            globalTime += 1;
+
+            rotX += vRotX;
+            rotY += vRotY;
+
+            vRotX *= 0.95;
+            vRotY *= 0.92;
+
+            if (Math.abs(vRotX) < 0.0015) vRotX = Math.sign(vRotX || 1) * 0.0015;
+
+            rotY = Math.max(-0.35, Math.min(0.35, rotY));
+            if (rotY >= 0.35 || rotY <= -0.35) vRotY = 0;
+
+            ctx.fillStyle = 'rgba(0, 0, 0, 0.6)';
+            ctx.fillRect(0, 0, width, height);
+
+            let cx = Math.cos(rotX), sx = Math.sin(rotX);
+            let cy = Math.cos(rotY), sy = Math.sin(rotY);
+
+            particles.forEach(p => p.updateAndRotate(cx, sx, cy, sy));
+            nebulaParticles.forEach(p => p.updateAndRotate(cx, sx, cy, sy));
+
+            let allDrawables = [...particles, ...nebulaParticles];
+            allDrawables.sort((a, b) => b.rotZ - a.rotZ);
+            allDrawables.forEach(p => p.draw());
+
+            requestAnimationFrame(animate);
+        }
+
+        initSystem();
+        animate();
+
+        /* =================================================================
+           第二部分：CV 手势引擎 + 微调视角控制 (全视角鲁棒优化版)
+        ================================================================= */
+        const videoElement = document.getElementById('input_video');
+        const ui = document.getElementById('statusUI');
+        const debugUi = document.getElementById('debugUI');
+
+        let swordPrecondition = false;
+        let lastSpreadDist = 0;
+        let lastHandCenterX = null;
+
+        // 全屏按钮逻辑
+        const fullscreenBtn = document.getElementById('fullscreenBtn');
+        fullscreenBtn.addEventListener('click', () => {
+            if (!document.fullscreenElement) {
+                document.documentElement.requestFullscreen().then(() => {
+                    fullscreenBtn.innerText = "✖ 退出全屏";
+                }).catch(err => alert(`全屏请求失败: ${err.message}`));
+            } else {
+                document.exitFullscreen().then(() => {
+                    fullscreenBtn.innerText = "🔲 进入全屏";
+                });
+            }
+        });
+        document.addEventListener('fullscreenchange', () => {
+            if (!document.fullscreenElement) fullscreenBtn.innerText = "🔲 进入全屏";
+        });
+
+        function getDistance(lm1, lm2) {
+            return Math.hypot(lm1.x - lm2.x, lm1.y - lm2.y, lm1.z - lm2.z);
+        }
+
+        // 🌟 核心修复：基于【手腕节点】的防俯视透视畸变算法
+        function checkFingers(landmarks) {
+            // 原理：无论手掌是什么角度，握拳时【指尖(Tip)】必定比【第二关节(PIP)】更靠近【手腕(0)】
+            const B = getDistance(landmarks[8], landmarks[0]) > getDistance(landmarks[6], landmarks[0]);
+            const C = getDistance(landmarks[12], landmarks[0]) > getDistance(landmarks[10], landmarks[0]);
+            const D = getDistance(landmarks[16], landmarks[0]) > getDistance(landmarks[14], landmarks[0]);
+            const E = getDistance(landmarks[20], landmarks[0]) > getDistance(landmarks[18], landmarks[0]);
+
+            const A = getDistance(landmarks[4], landmarks[17]) > getDistance(landmarks[3], landmarks[17]);
+            return { A, B, C, D, E };
+        }
+
+        function onResults(results) {
+            if (results.multiHandLandmarks && results.multiHandLandmarks.length > 0) {
+                const landmarks = results.multiHandLandmarks[0];
+                const fingers = checkFingers(landmarks);
+                const handCenterX = landmarks[9].x;
+
+                debugUi.innerText = `大拇指:${fingers.A?"开":"合"} | 食指:${fingers.B?"开":"合"} | 中指:${fingers.C?"开":"合"} | 无名指:${fingers.D?"开":"合"} | 小拇指:${fingers.E?"开":"合"}`;
+
+                // 🌟 核心修复：超高灵敏度握拳判定 (只要食中无小四根手指弯曲，立即判定为聚气)
+                const isFist = !fingers.B && !fingers.C && !fingers.D && !fingers.E;
+
+                /* 状态 1：剑诀 */
+                if (fingers.B && fingers.C && !fingers.D && !fingers.E) {
+                    swordPrecondition = true;
+                    ui.innerText = "⚡ 剑诀已成，准备爆发！";
+                    ui.style.color = "#ffdd00";
+                }
+
+                /* 状态 2：爆发散开 (剑诀后瞬间全开) */
+                const currentSpreadDist = getDistance(landmarks[4], landmarks[20]);
+                if (swordPrecondition && fingers.A && fingers.B && fingers.C && fingers.D && fingers.E) {
+                    let spreadSpeed = currentSpreadDist - lastSpreadDist;
+                    if (spreadSpeed > 0.005) {
+                        let power = Math.min(4, Math.max(1, spreadSpeed * 40));
+                        triggerExplosion(power);
+                        ui.innerText = "💥 梦幻星云：爆发！！";
+                        ui.style.color = "#ff4444";
+                        swordPrecondition = false;
+                    }
+                }
+
+                /* 状态 3：聚合星云 (高灵敏度握拳) */
+                if (isFist) {
+                    isAccelerating = true; isLocked = false; swordPrecondition = false;
+                    ui.innerText = "🌀 聚气中...";
+                    ui.style.color = "#44ff44";
+                } else {
+                    isAccelerating = false;
+                }
+
+                /* 状态 4：维持锁定 (ABE) */
+                if (fingers.A && fingers.B && !fingers.C && !fingers.D && fingers.E) {
+                    isLocked = true; swordPrecondition = false;
+                    ui.innerText = "🔒 星云已锁定！(松手不散)";
+                    ui.style.color = "#44ccff";
+                }
+
+                /* 状态 5：跟手旋转 + 微调俯仰视角控制 */
+                if (!swordPrecondition && fingers.A && fingers.B && fingers.C && fingers.D && fingers.E) {
+                    if (lastHandCenterX !== null) {
+                        let deltaX = handCenterX - lastHandCenterX;
+                        vRotX -= deltaX * 0.15;
+                    }
+
+                    let handPitch = landmarks[9].y - landmarks[0].y;
+
+                    if (handPitch > 0.05) {
+                        vRotY -= 0.0015;
+                        if (!isExploding) {
+                            ui.innerText = "👇 提线木偶：视角上移";
+                            ui.style.color = "#ffaa00";
+                        }
+                    } else if (handPitch < -0.15) {
+                        vRotY += 0.0015;
+                        if (!isExploding) {
+                            ui.innerText = "👆 端碗手势：视角下移";
+                            ui.style.color = "#00aaff";
+                        }
+                    } else {
+                        if (!isExploding) {
+                            ui.innerText = "✋ 平移手掌控制旋转";
+                            ui.style.color = "#ffffff";
+                        }
+                    }
+                }
+
+                lastSpreadDist = currentSpreadDist;
+                lastHandCenterX = handCenterX;
+
+            } else {
+                isAccelerating = false;
+                lastHandCenterX = null;
+                debugUi.innerText = "未检测到手部";
+                if(isLocked) {
+                    ui.innerText = "🔒 锁定中 (需重新伸手解除)";
+                    ui.style.color = "#44ccff";
+                } else {
+                    ui.innerText = "👀 等待手势输入...";
+                    ui.style.color = "#ffffff";
+                }
+            }
+        }
+
+        const hands = new Hands({locateFile: (file) => {
+            return `https://cdn.jsdelivr.net/npm/@mediapipe/hands/${file}`;
+        }});
+        hands.setOptions({
+            maxNumHands: 1,
+            modelComplexity: 1,
+            minDetectionConfidence: 0.7,
+            minTrackingConfidence: 0.7
+        });
+        hands.onResults(onResults);
+
+        const camera = new Camera(videoElement, {
+            onFrame: async () => { await hands.send({image: videoElement}); },
+            width: 640, height: 480
+        });
+        camera.start().then(() => {
+            ui.innerText = "✅ 梦幻星云已就绪，请举起手！";
+        });
+    </script>
+</body>
+</html>
